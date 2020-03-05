@@ -198,6 +198,8 @@ convolutional_layer parse_convolutional(list *options, size_params params)
     batch=params.batch;
     if(!(h && w && c)) error("Layer before convolutional layer must output image.");
     int batch_normalize = option_find_int_quiet(options, "batch_normalize", 0);
+    int cbn = option_find_int_quiet(options, "cbn", 0);
+    if (cbn) batch_normalize = 2;
     int binary = option_find_int_quiet(options, "binary", 0);
     int xnor = option_find_int_quiet(options, "xnor", 0);
     int use_bin_output = option_find_int_quiet(options, "bin_output", 0);
@@ -1051,6 +1053,8 @@ void parse_net_options(list *options, network *net)
     net->batch *= net->time_steps;
     net->subdivisions = subdivs;
 
+    *net->cur_iteration = 0;
+    net->dynamic_minibatch = option_find_int_quiet(options, "dynamic_minibatch", 0);
     net->optimized_memory = option_find_int_quiet(options, "optimized_memory", 0);
     net->workspace_size_limit = (size_t)1024*1024 * option_find_float_quiet(options, "workspace_size_limit_MB", 1024);  // 1024 MB by default
 
@@ -1201,6 +1205,7 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
     params.net = net;
     printf("batch = %d, time_steps = %d, train = %d \n", net.batch, net.time_steps, params.train);
 
+    int avg_outputs = 0;
     float bflops = 0;
     size_t workspace_size = 0;
     size_t max_inputs = 0;
@@ -1354,6 +1359,7 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
         }
 #endif // GPU
 
+        l.dynamic_minibatch = net.dynamic_minibatch;
         l.onlyforward = option_find_int_quiet(options, "onlyforward", 0);
         l.stopbackward = option_find_int_quiet(options, "stopbackward", 0);
         l.dontload = option_find_int_quiet(options, "dontload", 0);
@@ -1382,6 +1388,8 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
             }
         }
         if (l.bflops > 0) bflops += l.bflops;
+
+        avg_outputs += l.outputs;
     }
     free_list(sections);
 
@@ -1425,7 +1433,9 @@ network parse_network_cfg_custom(char *filename, int batch, int time_steps)
 
     net.outputs = get_network_output_size(net);
     net.output = get_network_output(net);
+    avg_outputs = avg_outputs / count;
     fprintf(stderr, "Total BFLOPS %5.3f \n", bflops);
+    fprintf(stderr, "avg_outputs = %d \n", avg_outputs);
 #ifdef GPU
     get_cuda_stream();
     get_cuda_memcpy_stream();
@@ -1866,6 +1876,7 @@ void load_weights_upto(network *net, char *filename, int cutoff)
         fread(&iseen, sizeof(uint32_t), 1, fp);
         *net->seen = iseen;
     }
+    *net->cur_iteration = get_current_batch(*net);
     printf(", trained: %.0f K-images (%.0f Kilo-batches_64) \n", (float)(*net->seen / 1000), (float)(*net->seen / 64000));
     int transpose = (major > 1000) || (minor > 1000);
 
@@ -1960,7 +1971,7 @@ network *load_network_custom(char *cfg, char *weights, int clear, int batch)
         printf(" Try to load weights: %s \n", weights);
         load_weights(net, weights);
     }
-    //fuse_conv_batchnorm(*net);
+    fuse_conv_batchnorm(*net);
     if (clear) (*net->seen) = 0;
     return net;
 }

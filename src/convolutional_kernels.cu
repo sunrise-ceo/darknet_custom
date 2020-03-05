@@ -395,7 +395,8 @@ void forward_convolutional_layer_gpu(convolutional_layer l, network_state state)
             if (l.activation == SWISH) activate_array_swish_ongpu(l.output_gpu, l.outputs*l.batch, l.activation_input_gpu, l.output_gpu);
             else if (l.activation == MISH) activate_array_mish_ongpu(l.output_gpu, l.outputs*l.batch, l.activation_input_gpu, l.output_gpu);
             else if (l.activation == NORM_CHAN) activate_array_normalize_channels_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu);
-            else if (l.activation == NORM_CHAN_SOFTMAX) activate_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu);
+            else if (l.activation == NORM_CHAN_SOFTMAX) activate_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu, 0);
+            else if (l.activation == NORM_CHAN_SOFTMAX_MAXVAL) activate_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu, 1);
             else if (l.activation != LINEAR && l.activation != LEAKY) activate_array_ongpu(l.output_gpu, l.outputs*l.batch, l.activation);
             //if(l.activation != LINEAR && l.activation != LEAKY) activate_array_ongpu(l.output_gpu, l.outputs*l.batch, l.activation);
             //if (l.binary || l.xnor) swap_binary(&l);
@@ -418,7 +419,7 @@ void forward_convolutional_layer_gpu(convolutional_layer l, network_state state)
 
 //#ifdef CUDNN_HALF
     //if (state.use_mixed_precision) {
-    int iteration_num = (*state.net.seen) / (state.net.batch*state.net.subdivisions);
+    int iteration_num = get_current_iteration(state.net); // (*state.net.seen) / (state.net.batch*state.net.subdivisions);
     if (state.index != 0 && state.net.cudnn_half && !l.xnor && (!state.train || iteration_num > 3*state.net.burn_in) &&
         (l.c / l.groups) % 8 == 0 && l.n % 8 == 0 && !state.train && l.groups <= 1 && l.size > 1)
     {
@@ -577,7 +578,7 @@ void forward_convolutional_layer_gpu(convolutional_layer l, network_state state)
                     l.c / l.groups,         // input channels
                     l.h, l.w,               // input size (h, w)
                     l.size, l.size,         // kernel size (h, w)
-                    l.pad, l.pad,           // padding (h, w)
+                    l.pad * l.dilation, l.pad * l.dilation,   // padding (h, w)
                     l.stride_y, l.stride_x,     // stride (h, w)
                     l.dilation, l.dilation, // dilation (h, w)
                     state.workspace);       // output
@@ -602,7 +603,8 @@ void forward_convolutional_layer_gpu(convolutional_layer l, network_state state)
     if (l.activation == SWISH) activate_array_swish_ongpu(l.output_gpu, l.outputs*l.batch, l.activation_input_gpu, l.output_gpu);
     else if (l.activation == MISH) activate_array_mish_ongpu(l.output_gpu, l.outputs*l.batch, l.activation_input_gpu, l.output_gpu);
     else if (l.activation == NORM_CHAN) activate_array_normalize_channels_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu);
-    else if (l.activation == NORM_CHAN_SOFTMAX) activate_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu);
+    else if (l.activation == NORM_CHAN_SOFTMAX) activate_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu, 0);
+    else if (l.activation == NORM_CHAN_SOFTMAX_MAXVAL) activate_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.output_gpu, 1);
     else if (l.activation != LINEAR) activate_array_ongpu(l.output_gpu, l.outputs*l.batch, l.activation);
     //if(l.dot > 0) dot_error_gpu(l);
     if(l.binary || l.xnor) swap_binary(&l);
@@ -647,7 +649,7 @@ void backward_convolutional_layer_gpu(convolutional_layer l, network_state state
 
     if (l.activation == SWISH) gradient_array_swish_ongpu(l.output_gpu, l.outputs*l.batch, l.activation_input_gpu, l.delta_gpu);
     else if (l.activation == MISH) gradient_array_mish_ongpu(l.outputs*l.batch, l.activation_input_gpu, l.delta_gpu);
-    else if (l.activation == NORM_CHAN_SOFTMAX) gradient_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.delta_gpu);
+    else if (l.activation == NORM_CHAN_SOFTMAX || l.activation == NORM_CHAN_SOFTMAX_MAXVAL) gradient_array_normalize_channels_softmax_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.delta_gpu);
     else if (l.activation == NORM_CHAN) gradient_array_normalize_channels_ongpu(l.output_gpu, l.outputs*l.batch, l.batch, l.out_c, l.out_w*l.out_h, l.delta_gpu);
     else gradient_array_ongpu(l.output_gpu, l.outputs*l.batch, l.activation, l.delta_gpu);
 
@@ -669,7 +671,7 @@ void backward_convolutional_layer_gpu(convolutional_layer l, network_state state
     float alpha = 1, beta = 0;
 
 //#ifdef CUDNN_HALF
-    int iteration_num = (*state.net.seen) / (state.net.batch*state.net.subdivisions);
+    int iteration_num = get_current_iteration(state.net); //(*state.net.seen) / (state.net.batch*state.net.subdivisions);
     if (state.index != 0 && state.net.cudnn_half && !l.xnor && (!state.train || iteration_num > 3*state.net.burn_in) &&
         (l.c / l.groups) % 8 == 0 && l.n % 8 == 0 && !state.train && l.groups <= 1 && l.size > 1)
     {
@@ -856,7 +858,7 @@ void backward_convolutional_layer_gpu(convolutional_layer l, network_state state
                 l.c / l.groups,         // input channels
                 l.h, l.w,               // input size (h, w)
                 l.size, l.size,         // kernel size (h, w)
-                l.pad, l.pad,           // padding (h, w)
+                l.pad * l.dilation, l.pad * l.dilation,   // padding (h, w)
                 l.stride_y, l.stride_x,     // stride (h, w)
                 l.dilation, l.dilation, // dilation (h, w)
                 state.workspace);       // output
@@ -881,7 +883,7 @@ void backward_convolutional_layer_gpu(convolutional_layer l, network_state state
                     l.c / l.groups,         // input channels
                     l.h, l.w,               // input size (h, w)
                     l.size, l.size,         // kernel size (h, w)
-                    l.pad, l.pad,           // padding size (h, w)
+                    l.pad * l.dilation, l.pad * l.dilation,   // padding size (h, w)
                     l.stride_y, l.stride_x,     // stride size (h, w)
                     l.dilation, l.dilation, // dilation size (h, w)
                     delta);                 // output (delta)
@@ -896,10 +898,10 @@ void backward_convolutional_layer_gpu(convolutional_layer l, network_state state
 #endif
     if (state.net.try_fix_nan) {
         if (state.delta) {
-            fix_nan_and_inf(state.delta, l.inputs * l.batch);
+            reset_nan_and_inf(state.delta, l.inputs * l.batch);
         }
         int size = l.nweights;
-        fix_nan_and_inf(l.weight_updates_gpu, size);
+        reset_nan_and_inf(l.weight_updates_gpu, size);
         fix_nan_and_inf(l.weights_gpu, size);
     }
 }
@@ -976,7 +978,7 @@ void assisted_activation2_gpu(float alpha, float *output, float *gt_gpu, float *
 
 void assisted_excitation_forward_gpu(convolutional_layer l, network_state state)
 {
-    const int iteration_num = (*state.net.seen) / (state.net.batch*state.net.subdivisions);
+    const int iteration_num = get_current_iteration(state.net); //(*state.net.seen) / (state.net.batch*state.net.subdivisions);
 
     // epoch
     //const float epoch = (float)(*state.net.seen) / state.net.train_images_num;
@@ -1230,7 +1232,7 @@ void update_convolutional_layer_gpu(layer l, int batch, float learning_rate_init
     //float decay = a.decay;
     //int batch = a.batch;
 
-    fix_nan_and_inf(l.weight_updates_gpu, l.nweights);
+    reset_nan_and_inf(l.weight_updates_gpu, l.nweights);
     fix_nan_and_inf(l.weights_gpu, l.nweights);
 
     if (l.adam) {

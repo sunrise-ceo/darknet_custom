@@ -34,6 +34,8 @@
 
 #define SECRET_NUM -1234
 
+typedef enum { UNUSED_DEF_VAL } UNUSED_ENUM_TYPE;
+
 #ifdef GPU
 
 #include <cuda_runtime.h>
@@ -42,8 +44,8 @@
 
 #ifdef CUDNN
 #include <cudnn.h>
-#endif
-#endif
+#endif  // CUDNN
+#endif  // GPU
 
 #ifdef __cplusplus
 extern "C" {
@@ -102,7 +104,7 @@ typedef struct tree {
 
 // activations.h
 typedef enum {
-    LOGISTIC, RELU, RELIE, LINEAR, RAMP, TANH, PLSE, LEAKY, ELU, LOGGY, STAIR, HARDTAN, LHTAN, SELU, SWISH, MISH, NORM_CHAN, NORM_CHAN_SOFTMAX
+    LOGISTIC, RELU, RELIE, LINEAR, RAMP, TANH, PLSE, LEAKY, ELU, LOGGY, STAIR, HARDTAN, LHTAN, SELU, SWISH, MISH, NORM_CHAN, NORM_CHAN_SOFTMAX, NORM_CHAN_SOFTMAX_MAXVAL
 }ACTIVATION;
 
 // parser.h
@@ -216,6 +218,7 @@ struct layer {
     int batch_normalize;
     int shortcut;
     int batch;
+    int dynamic_minibatch;
     int forced;
     int flipped;
     int inputs;
@@ -495,7 +498,7 @@ struct layer {
 
     size_t workspace_size;
 
-#ifdef GPU
+//#ifdef GPU
     int *indexes_gpu;
 
     float *z_gpu;
@@ -551,6 +554,8 @@ struct layer {
 
     float * mean_gpu;
     float * variance_gpu;
+    float * m_cbn_avg_gpu;
+    float * v_cbn_avg_gpu;
 
     float * rolling_mean_gpu;
     float * rolling_variance_gpu;
@@ -584,6 +589,8 @@ struct layer {
     float * loss_gpu;
     float * delta_gpu;
     float * rand_gpu;
+    float * drop_blocks_scale;
+    float * drop_blocks_scale_gpu;
     float * squared_gpu;
     float * norms_gpu;
 
@@ -606,8 +613,21 @@ struct layer {
     cudnnConvolutionBwdDataAlgo_t bd_algo, bd_algo16;
     cudnnConvolutionBwdFilterAlgo_t bf_algo, bf_algo16;
     cudnnPoolingDescriptor_t poolingDesc;
+#else   // CUDNN
+    void* srcTensorDesc, *dstTensorDesc;
+    void* srcTensorDesc16, *dstTensorDesc16;
+    void* dsrcTensorDesc, *ddstTensorDesc;
+    void* dsrcTensorDesc16, *ddstTensorDesc16;
+    void* normTensorDesc, *normDstTensorDesc, *normDstTensorDescF16;
+    void* weightDesc, *weightDesc16;
+    void* dweightDesc, *dweightDesc16;
+    void* convDesc;
+    UNUSED_ENUM_TYPE fw_algo, fw_algo16;
+    UNUSED_ENUM_TYPE bd_algo, bd_algo16;
+    UNUSED_ENUM_TYPE bf_algo, bf_algo16;
+    void* poolingDesc;
 #endif  // CUDNN
-#endif  // GPU
+//#endif  // GPU
 };
 
 
@@ -621,6 +641,7 @@ typedef struct network {
     int n;
     int batch;
     uint64_t *seen;
+    int *cur_iteration;
     int *t;
     float epoch;
     int subdivisions;
@@ -697,7 +718,7 @@ typedef struct network {
     float *cost;
     float clip;
 
-#ifdef GPU
+//#ifdef GPU
     //float *input_gpu;
     //float *truth_gpu;
     float *delta_gpu;
@@ -718,8 +739,9 @@ typedef struct network {
     float *global_delta_gpu;
     float *state_delta_gpu;
     size_t max_delta_gpu_size;
-#endif
+//#endif  // GPU
     int optimized_memory;
+    int dynamic_minibatch;
     size_t workspace_size_limit;
 } network;
 
@@ -929,6 +951,8 @@ LIB_API void rgbgr_image(image im);
 LIB_API image make_image(int w, int h, int c);
 LIB_API image load_image_color(char *filename, int w, int h);
 LIB_API void free_image(image m);
+LIB_API image crop_image(image im, int dx, int dy, int w, int h);
+LIB_API image resize_min(image im, int min);
 
 // layer.h
 LIB_API void free_layer_custom(layer l, int keep_cudnn_desc);

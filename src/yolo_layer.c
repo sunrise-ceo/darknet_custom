@@ -11,6 +11,8 @@
 #include <string.h>
 #include <stdlib.h>
 
+extern int check_mistakes;
+
 layer make_yolo_layer(int batch, int w, int h, int n, int total, int *mask, int classes, int max_boxes)
 {
     int i;
@@ -137,12 +139,18 @@ static inline float fix_nan_inf(float val)
 
 static inline float clip_value(float val, const float max_val)
 {
-    if (val > max_val) val = max_val;
-    else if (val < -max_val) val = -max_val;
+    if (val > max_val) {
+        //printf("\n val = %f > max_val = %f \n", val, max_val);
+        val = max_val;
+    }
+    else if (val < -max_val) {
+        //printf("\n val = %f < -max_val = %f \n", val, -max_val);
+        val = -max_val;
+    }
     return val;
 }
 
-ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i, int j, int lw, int lh, int w, int h, float *delta, float scale, int stride, float iou_normalizer, IOU_LOSS iou_loss, int accumulate, int max_delta)
+ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i, int j, int lw, int lh, int w, int h, float *delta, float scale, int stride, float iou_normalizer, IOU_LOSS iou_loss, int accumulate, float max_delta)
 {
     ious all_ious = { 0 };
     // i - step in layer width
@@ -197,15 +205,19 @@ ious delta_yolo_box(box truth, float *x, float *biases, int n, int index, int i,
         dw *= iou_normalizer;
         dh *= iou_normalizer;
 
+
         dx = fix_nan_inf(dx);
         dy = fix_nan_inf(dy);
         dw = fix_nan_inf(dw);
         dh = fix_nan_inf(dh);
 
-        dx = clip_value(dx, max_delta);
-        dy = clip_value(dy, max_delta);
-        dw = clip_value(dw, max_delta);
-        dh = clip_value(dh, max_delta);
+        if (max_delta != FLT_MAX) {
+            dx = clip_value(dx, max_delta);
+            dy = clip_value(dy, max_delta);
+            dw = clip_value(dw, max_delta);
+            dh = clip_value(dh, max_delta);
+        }
+
 
         if (!accumulate) {
             delta[index + 0 * stride] = 0;
@@ -245,7 +257,13 @@ void delta_yolo_class(float *output, float *delta, int index, int class_id, int 
 {
     int n;
     if (delta[index + stride*class_id]){
-        delta[index + stride*class_id] = (1 - label_smooth_eps) - output[index + stride*class_id];
+        if (label_smooth_eps > 0) {
+            float out_val = output[index + stride*class_id] * (1 - label_smooth_eps) + 0.5*label_smooth_eps;
+            delta[index + stride*class_id] = 1 - out_val;
+        }
+        else {
+            delta[index + stride*class_id] = 1 - output[index + stride*class_id];
+        }
         if (classes_multipliers) delta[index + stride*class_id] *= classes_multipliers[class_id];
         if(avg_cat) *avg_cat += output[index + stride*class_id];
         return;
@@ -273,7 +291,13 @@ void delta_yolo_class(float *output, float *delta, int index, int class_id, int 
     else {
         // default
         for (n = 0; n < classes; ++n) {
-            delta[index + stride*n] = ((n == class_id) ? (1 - label_smooth_eps) : (0 + label_smooth_eps/classes)) - output[index + stride*n];
+            if (label_smooth_eps > 0) {
+                float out_val = output[index + stride*class_id] * (1 - label_smooth_eps) + 0.5*label_smooth_eps;
+                delta[index + stride*n] = ((n == class_id) ? 1 : 0) - out_val;
+            }
+            else {
+                delta[index + stride*n] = ((n == class_id) ? 1 : 0) - output[index + stride*n];
+            }
             if (classes_multipliers && n == class_id) delta[index + stride*class_id] *= classes_multipliers[class_id];
             if (n == class_id && avg_cat) *avg_cat += output[index + stride*n];
         }
@@ -351,9 +375,9 @@ void forward_yolo_layer(const layer l, network_state state)
                         box truth = float_to_box_stride(state.truth + t*(4 + 1) + b*l.truths, 1);
                         int class_id = state.truth[t*(4 + 1) + b*l.truths + 4];
                         if (class_id >= l.classes) {
-                            printf(" Warning: in txt-labels class_id=%d >= classes=%d in cfg-file. In txt-labels class_id should be [from 0 to %d] \n", class_id, l.classes, l.classes - 1);
-                            printf(" truth.x = %f, truth.y = %f, truth.w = %f, truth.h = %f, class_id = %d \n", truth.x, truth.y, truth.w, truth.h, class_id);
-                            getchar();
+                            printf("\n Warning: in txt-labels class_id=%d >= classes=%d in cfg-file. In txt-labels class_id should be [from 0 to %d] \n", class_id, l.classes, l.classes - 1);
+                            printf("\n truth.x = %f, truth.y = %f, truth.w = %f, truth.h = %f, class_id = %d \n", truth.x, truth.y, truth.w, truth.h, class_id);
+                            if (check_mistakes) getchar();
                             continue; // if label contains class_id more than number of classes in the cfg-file
                         }
                         if (!truth.x) break;  // continue;
@@ -565,9 +589,9 @@ void forward_yolo_layer(const layer l, network_state state)
     classification_loss /= l.batch;
     iou_loss /= l.batch;
 
-    printf("v3 (%s loss, Normalizer: (iou: %f, cls: %f) Region %d Avg (IOU: %f, GIOU: %f), Class: %f, Obj: %f, No Obj: %f, .5R: %f, .75R: %f, count: %d, loss = %f, class_loss = %f, iou_loss = %f\n",
+    fprintf(stderr, "v3 (%s loss, Normalizer: (iou: %.2f, cls: %.2f) Region %d Avg (IOU: %f, GIOU: %f), Class: %f, Obj: %f, No Obj: %f, .5R: %f, .75R: %f, count: %d, class_loss = %f, iou_loss = %f, total_loss = %f \n",
         (l.iou_loss == MSE ? "mse" : (l.iou_loss == GIOU ? "giou" : "iou")), l.iou_normalizer, l.cls_normalizer, state.index, tot_iou / count, tot_giou / count, avg_cat / class_count, avg_obj / count, avg_anyobj / (l.w*l.h*l.n*l.batch), recall / count, recall75 / count, count,
-        loss, classification_loss, iou_loss);
+        classification_loss, iou_loss, loss);
 }
 
 void backward_yolo_layer(const layer l, network_state state)
